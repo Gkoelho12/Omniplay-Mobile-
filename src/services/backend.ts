@@ -731,23 +731,52 @@ export const Backend = {
   joinHub(): void {
     if (!this.canNet || !this.sb || !this.user?.id || this.hub) return;
     const ch = this.sb.channel('omni-hub', {
-      config: { presence: { key: this.user.id }, broadcast: { self: false } }
+      config: { presence: { key: this.user.id }, broadcast: { self: false, ack: false } }
     });
     ch.on('presence', { event: 'sync' }, () => {
-      this.onlineIds = new Set(Object.keys(ch.presenceState()));
+      const state = ch.presenceState();
+      const ids = new Set<string>(Object.keys(state));
+      Object.values(state).forEach((arr: any) => {
+        (arr || []).forEach((m: any) => {
+          if (m?.id) ids.add(String(m.id));
+          if (m?.username) ids.add(String(m.username).toLowerCase());
+        });
+      });
+      this.onlineIds = ids;
       this.emit('presence');
     });
     ch.on('broadcast', { event: 'invite' }, ({ payload }) => {
-      if (payload && payload.to === this.user?.id) {
+      if (!payload || !this.user) return;
+      const myId = this.user.id;
+      const myUname = (this.user.username || '').toLowerCase();
+      const pTo = String(payload.to || '');
+      const pToUname = String(payload.toUsername || '').toLowerCase();
+      if (
+        (myId && pTo === myId) ||
+        (myUname && pTo.toLowerCase() === myUname) ||
+        (myUname && pToUname === myUname)
+      ) {
         this.emit('invite', payload as InvitePayload);
       }
     });
     this.hubReady = new Promise((resolve) => {
       ch.subscribe(async (st) => {
         if (st === 'SUBSCRIBED') {
-          await ch.track({ at: Date.now() });
+          try {
+            await ch.track({
+              id: this.user?.id,
+              username: this.user?.username,
+              at: Date.now()
+            });
+          } catch {
+            // ignore
+          }
           resolve(true);
         } else if (st === 'CHANNEL_ERROR' || st === 'TIMED_OUT' || st === 'CLOSED') {
+          if (this.hub === ch) {
+            this.hub = null;
+            this.hubReady = null;
+          }
           resolve(false);
         }
       });
@@ -769,37 +798,85 @@ export const Backend = {
     this.emit('presence');
   },
 
-  async sendInvite(toId: string, room: string, game = 'mexicana'): Promise<boolean> {
-    if (!this.canNet || !toId || !this.user?.id) return false;
-    if (!this.hub) this.joinHub();
-    if (!this.hub || !this.hubReady) return false;
-    const ready = await Promise.race([
-      this.hubReady,
-      new Promise<boolean>((r) => setTimeout(() => r(false), 6000))
-    ]);
-    if (!ready) return false;
-    const me = this.user;
-    try {
-      const res = await this.hub.send({
-        type: 'broadcast',
-        event: 'invite',
-        payload: {
-          to: toId,
-          room,
-          game,
-          from: {
-            id: me.id,
-            username: me.username,
-            display_name: me.display_name,
-            avatar: me.avatar,
-            color: me.color
-          }
+  async sendInvite(toIdOrUsername: string, room: string, game = 'mexicana'): Promise<boolean> {
+    if (!this.canNet || !toIdOrUsername || !this.user?.id || !this.sb) return false;
+
+    let targetId = toIdOrUsername.trim();
+    let targetUsername = '';
+
+    // Se passaram um @username (não é UUID), resolve o UUID na tabela profiles:
+    if (!/^[0-9a-f-]{36}$/i.test(targetId)) {
+      const cleanU = targetId.replace(/^@/, '').toLowerCase();
+      targetUsername = cleanU;
+      try {
+        const { data: prof } = await this.sb
+          .from('profiles')
+          .select('id,username')
+          .ilike('username', cleanU)
+          .maybeSingle();
+        if (prof?.id) {
+          targetId = prof.id;
+          targetUsername = (prof.username || cleanU).toLowerCase();
         }
-      });
-      return res === 'ok';
-    } catch {
-      return false;
+      } catch {
+        // continua com o username
+      }
+    } else {
+      try {
+        const { data: prof } = await this.sb
+          .from('profiles')
+          .select('username')
+          .eq('id', targetId)
+          .maybeSingle();
+        if (prof?.username) targetUsername = prof.username.toLowerCase();
+      } catch {
+        // ignore
+      }
     }
+
+    const me = this.user;
+    const trySendOnce = async (): Promise<boolean> => {
+      if (!this.hub || !this.hubReady) {
+        this.leaveHub();
+        this.joinHub();
+      }
+      if (!this.hub || !this.hubReady) return false;
+      const ready = await Promise.race([
+        this.hubReady,
+        new Promise<boolean>((r) => setTimeout(() => r(false), 5000))
+      ]);
+      if (!ready || !this.hub) return false;
+      try {
+        const res = await this.hub.send({
+          type: 'broadcast',
+          event: 'invite',
+          payload: {
+            to: targetId,
+            toUsername: targetUsername,
+            room,
+            game,
+            from: {
+              id: me.id,
+              username: me.username,
+              display_name: me.display_name,
+              avatar: me.avatar,
+              color: me.color
+            }
+          }
+        });
+        return res === 'ok';
+      } catch {
+        return false;
+      }
+    };
+
+    const firstOk = await trySendOnce();
+    if (firstOk) return true;
+
+    // Reconecta o hub uma vez se o canal estivesse adormecido no telemóvel:
+    this.leaveHub();
+    this.joinHub();
+    return trySendOnce();
   },
 
   newKey(): string {

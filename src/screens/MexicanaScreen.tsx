@@ -50,6 +50,7 @@ export const MexicanaScreen: React.FC<MexicanaScreenProps> = ({
   ]);
   const [friends, setFriends] = useState<FriendItem[]>([]);
   const [invitedIds, setInvitedIds] = useState<Set<string>>(new Set());
+  const [inviteUname, setInviteUname] = useState<string>('');
   const [room, setRoom] = useState<Room | null>(null);
   const [members, setMembers] = useState<any[]>([]);
   const [gameState, setGameState] = useState<MexicanaState | null>(null);
@@ -172,9 +173,11 @@ export const MexicanaScreen: React.FC<MexicanaScreenProps> = ({
     }
     setBusy(true);
     try {
+      leaveAll();
       const r = await Rooms.create('mexicana', onlineMax);
       bindRoomEvents(r);
       setScreen('lobby');
+      loadFriends();
     } catch (e: any) {
       onToast(e?.message || 'Erro ao criar sala.');
     } finally {
@@ -198,11 +201,23 @@ export const MexicanaScreen: React.FC<MexicanaScreenProps> = ({
       const r = await Rooms.join(clean);
       bindRoomEvents(r);
       setScreen('lobby');
+      loadFriends();
     } catch (e: any) {
       onToast(e?.message || 'Não foi possível entrar na sala.');
     } finally {
       setBusy(false);
     }
+  };
+
+  const markInvitedTemporarily = (idOrUname: string) => {
+    setInvitedIds((prev) => new Set(prev).add(idOrUname));
+    setTimeout(() => {
+      setInvitedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(idOrUname);
+        return next;
+      });
+    }, 8000);
   };
 
   const handleCreateAndInvite = async (friendId: string) => {
@@ -212,12 +227,14 @@ export const MexicanaScreen: React.FC<MexicanaScreenProps> = ({
     }
     setBusy(true);
     try {
+      leaveAll();
       const r = await Rooms.create('mexicana', onlineMax);
       bindRoomEvents(r);
       setScreen('lobby');
+      loadFriends();
       const ok = await Backend.sendInvite(friendId, r.code, 'mexicana');
       if (ok) {
-        setInvitedIds((prev) => new Set(prev).add(friendId));
+        markInvitedTemporarily(friendId);
         onToast(`Sala ${r.code} criada e convite enviado! 🃏`);
       } else {
         onToast(`Sala ${r.code} criada! Partilha o código com o teu amigo.`);
@@ -233,10 +250,26 @@ export const MexicanaScreen: React.FC<MexicanaScreenProps> = ({
     if (!room) return;
     const ok = await Backend.sendInvite(friendId, room.code, 'mexicana');
     if (ok) {
-      setInvitedIds((prev) => new Set(prev).add(friendId));
+      markInvitedTemporarily(friendId);
       onToast(`Convite enviado a ${name}! 🃏`);
     } else {
       onToast('Não foi possível enviar o convite agora.');
+    }
+  };
+
+  const handleLobbyInviteByUsername = async () => {
+    if (!room) return;
+    const raw = inviteUname.trim().replace(/^@/, '').toLowerCase();
+    if (!raw) {
+      onToast('Escreve o @username do jogador que queres convidar.');
+      return;
+    }
+    const ok = await Backend.sendInvite(raw, room.code, 'mexicana');
+    if (ok) {
+      setInviteUname('');
+      onToast(`Convite enviado para @${raw}! 🃏`);
+    } else {
+      onToast(`Não foi possível enviar convite a @${raw}. Verifica se está online.`);
     }
   };
 
@@ -564,7 +597,22 @@ export const MexicanaScreen: React.FC<MexicanaScreenProps> = ({
 
         {/* Convidar Amigos Diretamente do Lobby */}
         <View style={styles.lobbyCard}>
-          <Text style={styles.secTitle}>👥 Convidar Amigos para esta Sala</Text>
+          <Text style={styles.secTitle}>👥 Convidar Jogador para esta Sala</Text>
+          <View style={styles.joinRow}>
+            <TextInput
+              style={[styles.codeInput, { letterSpacing: 0.5, fontSize: 14, textAlign: 'left' }]}
+              placeholder="@username (site ou app)"
+              placeholderTextColor={COLORS.muted}
+              autoCapitalize="none"
+              autoCorrect={false}
+              value={inviteUname}
+              onChangeText={setInviteUname}
+            />
+            <TouchableOpacity style={styles.neonBtn} onPress={handleLobbyInviteByUsername}>
+              <Text style={styles.neonBtnTxt}>Convidar 📨</Text>
+            </TouchableOpacity>
+          </View>
+
           {friends.length === 0 ? (
             <TouchableOpacity style={styles.ghostBtn} onPress={onOpenFriends}>
               <Text style={styles.ghostBtnTxt}>+ Adicionar Amigos</Text>
@@ -573,9 +621,14 @@ export const MexicanaScreen: React.FC<MexicanaScreenProps> = ({
             <View style={{ width: '100%', gap: 8 }}>
               {friends.map((f) => {
                 const p = f.profile;
-                const isOnline = p.id ? Backend.onlineIds.has(p.id) : false;
-                const inRoom = members.some((m) => m.userId && m.userId === p.id);
-                const sent = p.id ? invitedIds.has(p.id) : false;
+                const isOnline =
+                  (p.id ? Backend.onlineIds.has(p.id) : false) ||
+                  (p.username ? Backend.onlineIds.has(p.username.toLowerCase()) : false);
+                const inRoom = members.some(
+                  (m) => (m.userId && m.userId === p.id) || (m.uid && m.uid === p.id)
+                );
+                const targetKey = p.id || p.username;
+                const sent = targetKey ? invitedIds.has(targetKey) : false;
                 return (
                   <View key={p.id || p.username} style={styles.inviteRow}>
                     <AvatarView avatar={p.avatar} color={p.color} xp={p.xp} size={36} />
@@ -590,8 +643,11 @@ export const MexicanaScreen: React.FC<MexicanaScreenProps> = ({
                         styles.neonBtnSm,
                         (inRoom || sent) && { backgroundColor: 'rgba(255,255,255,0.1)' }
                       ]}
-                      disabled={inRoom || sent || !p.id}
-                      onPress={() => p.id && handleLobbyInviteFriend(p.id, p.display_name || p.username)}
+                      disabled={inRoom || sent || !targetKey}
+                      onPress={() =>
+                        targetKey &&
+                        handleLobbyInviteFriend(targetKey, p.display_name || p.username)
+                      }
                     >
                       <Text
                         style={[

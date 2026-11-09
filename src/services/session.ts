@@ -1,19 +1,22 @@
-/* OmniPlay Mobile · Salas Online (Supabase Realtime) e Sessão de Jogo (compatível com o site) */
+/* OmniPlay Mobile · Salas Online (Supabase Realtime) e Sessão de Jogo (100% compatível com o site) */
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { Backend } from './backend';
 import { uid } from '../theme';
 
 export interface RoomMember {
   key: string;
+  uid: string | null;
   userId: string | null;
   name: string;
   avatar: string;
   color: number;
   xp: number;
+  host: boolean;
   isHost: boolean;
   playing: boolean;
   gameId: string;
   maxPlayers: number;
+  t: number;
   joinedAt: number;
 }
 
@@ -45,7 +48,7 @@ export class Room {
     this.gameId = gameId;
     this.isHost = isHost;
     this.maxPlayers = maxPlayers;
-    this.key = Backend.user?.id || 'g-' + Backend.newKey();
+    this.key = uid(8);
     this.joinedAt = Date.now();
   }
 
@@ -65,17 +68,21 @@ export class Room {
 
   meta(): RoomMember {
     const me = Backend.me();
+    const myUid = Backend.user?.id || null;
     return {
       key: this.key,
-      userId: Backend.user?.id || null,
+      uid: myUid,
+      userId: myUid,
       name: me.display_name || me.username,
       avatar: me.avatar,
       color: me.color,
       xp: me.xp || 0,
+      host: this.isHost,
       isHost: this.isHost,
       playing: this.playing,
       gameId: this.gameId,
       maxPlayers: this.maxPlayers,
+      t: this.joinedAt,
       joinedAt: this.joinedAt
     };
   }
@@ -86,8 +93,9 @@ export class Room {
         reject(new Error('Sem ligação ao servidor.'));
         return;
       }
-      const ch = Backend.sb.channel('omni-room-' + this.code, {
-        config: { presence: { key: this.key }, broadcast: { self: false } }
+      // Usa exatamente o mesmo nome de canal que o site ('room:' + this.code)
+      const ch = Backend.sb.channel('room:' + this.code, {
+        config: { presence: { key: this.key }, broadcast: { self: false, ack: false } }
       });
       this.ch = ch;
       let done = false;
@@ -100,17 +108,23 @@ export class Room {
       }, 9000);
 
       ch.on('presence', { event: 'sync' }, () => this._sync());
-      ch.on('presence', { event: 'leave' }, ({ leftPresences }) => {
+      ch.on('presence', { event: 'leave' }, ({ key, currentPresences, leftPresences }) => {
+        if (this.closed) return;
+        const stillHere =
+          (currentPresences && currentPresences.length > 0) ||
+          (key != null && ((this.ch?.presenceState() || {})[key] || []).length > 0);
+        if (stillHere) return;
         const left = leftPresences || [];
         if (!left.length) return;
-        const leftHost = left.some((p: any) => p.isHost);
+        const leftHost = left.some((p: any) => Boolean(p.isHost || p.host));
         setTimeout(() => {
           if (this.closed) return;
+          if (key != null && ((this.ch?.presenceState() || {})[key] || []).length > 0) return;
           this._sync();
           if (leftHost && !this.members.some((m) => m.isHost)) {
             this.emit('hostleft');
           } else {
-            this.emit('memberleft', left);
+            this.emit('memberleft', left[0] || left);
           }
         }, 1500);
       });
@@ -141,7 +155,7 @@ export class Room {
                 reject(new Error('Essa sala já está a meio de uma partida.'));
                 return;
               }
-              this.gameId = host.gameId;
+              this.gameId = host.gameId || 'mexicana';
               this.maxPlayers = host.maxPlayers || 4;
               if (this.members.length > this.maxPlayers) {
                 done = true;
@@ -157,7 +171,7 @@ export class Room {
           };
 
           if (this.isHost) {
-            setTimeout(finishJoin, 250);
+            setTimeout(finishJoin, 350);
           } else {
             let waited = 0;
             const poll = () => {
@@ -187,18 +201,51 @@ export class Room {
   _sync() {
     if (!this.ch) return;
     const raw = this.ch.presenceState();
-    const list = Object.values(raw)
-      .map((arr: any) => arr && arr[0])
-      .filter(Boolean) as RoomMember[];
+    const list: RoomMember[] = Object.entries(raw)
+      .filter(([, metas]) => metas && (metas as any[]).length > 0)
+      .map(([k, metas]) => {
+        const m = (metas as any[])[0] || {};
+        const isHost = Boolean(m.isHost || m.host);
+        const userId = m.userId || m.uid || null;
+        const joinedAt = m.joinedAt || m.t || 0;
+        return {
+          ...m,
+          key: m.key || k,
+          uid: userId,
+          userId,
+          host: isHost,
+          isHost,
+          t: joinedAt,
+          joinedAt,
+          gameId: m.gameId || 'mexicana',
+          maxPlayers: m.maxPlayers || this.maxPlayers || 4
+        } as RoomMember;
+      });
+
     if (!list.some((m) => m.key === this.key)) {
       list.push(this.meta());
     }
-    this.members = list.sort((a, b) => (b.isHost ? 1 : 0) - (a.isHost ? 1 : 0) || a.joinedAt - b.joinedAt);
+    list.sort(
+      (a, b) =>
+        (b.isHost ? 1 : 0) - (a.isHost ? 1 : 0) ||
+        a.joinedAt - b.joinedAt ||
+        String(a.key).localeCompare(String(b.key))
+    );
+    const host = list.find((m) => m.isHost);
+    if (host && host.maxPlayers) this.maxPlayers = host.maxPlayers;
+    this.members = list;
     this.emit('members', this.members);
   }
 
   async setPlaying(v: boolean) {
     this.playing = v;
+    try {
+      if (this.ch && !this.closed) {
+        await this.ch.track(this.meta());
+      }
+    } catch {
+      // ignore
+    }
   }
 
   send(event: string, payload: any) {
@@ -219,13 +266,18 @@ export class Room {
 
 export const Rooms = {
   genCode(): string {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
     return Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
   },
   async create(gameId: string, maxPlayers: number): Promise<Room> {
     if (!Backend.sb) throw new Error('Modo offline — joga no mesmo dispositivo.');
-    const r = new Room(this.genCode(), gameId, true, maxPlayers);
-    return r.open();
+    for (let i = 0; i < 4; i++) {
+      const r = new Room(this.genCode(), gameId, true, maxPlayers);
+      await r.open();
+      if (r.members.filter((m) => m.isHost).length <= 1) return r;
+      r.close();
+    }
+    throw new Error('Não foi possível criar a sala.');
   },
   async join(code: string): Promise<Room> {
     if (!Backend.sb) throw new Error('Modo offline — não é possível entrar em salas.');
@@ -401,4 +453,3 @@ export class GameSession<S = any> {
 export function newToken(): string {
   return uid(6);
 }
-
