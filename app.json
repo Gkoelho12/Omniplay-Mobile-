@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "OmniPlay",
+    "slug": "omniplay",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#07080d",
+    "primaryColor": "#22d3ee",
+    "splash": {
+      "backgroundColor": "#07080d",
+      "resizeMode": "contain"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.omniplay.app"
+    },
+    "android": {
+      "package": "com.omniplay.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#07080d"
+      }
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}
+
