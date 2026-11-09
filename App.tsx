@@ -11,7 +11,7 @@ import {
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { COLORS, levelInfo } from './src/theme';
-import { Backend, UserProfile, GameInvitePayload } from './src/services/backend';
+import { Backend, UserProfile, InvitePayload } from './src/services/backend';
 import { StarfieldBackground } from './src/components/StarfieldBackground';
 import { AvatarView } from './src/components/AvatarView';
 import { AuthModal } from './src/components/AuthModal';
@@ -34,7 +34,7 @@ export default function App() {
   const [challengeFriendId, setChallengeFriendId] = useState<string | null>(null);
 
   // Live incoming invite banner
-  const [liveInvite, setLiveInvite] = useState<GameInvitePayload | null>(null);
+  const [liveInvite, setLiveInvite] = useState<InvitePayload | null>(null);
 
   // Toast notification
   const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -70,7 +70,7 @@ export default function App() {
 
     const uAuth = Backend.on('auth', () => setMe({ ...Backend.me() }));
     const uProf = Backend.on('profile', () => setMe({ ...Backend.me() }));
-    const uInv = Backend.on('invite', (payload: GameInvitePayload) => {
+    const uInv = Backend.on('invite', (payload: InvitePayload) => {
       setLiveInvite(payload);
     });
 
@@ -89,9 +89,9 @@ export default function App() {
     setHubSubTab(sub);
   };
 
-  const handleAcceptInvite = (inv: GameInvitePayload) => {
+  const handleAcceptInvite = (inv: InvitePayload) => {
     setLiveInvite(null);
-    setInitialRoomCode(inv.roomCode);
+    setInitialRoomCode(inv.room);
     setChallengeFriendId(null);
     setRoute('mexicana');
   };
@@ -156,10 +156,9 @@ export default function App() {
               >
                 <AvatarView
                   avatar={me.avatar}
-                  hue={me.avatar_hue}
-                  frame={me.frame}
+                  color={me.color}
+                  xp={me.xp}
                   size={30}
-                  online={!!Backend.account}
                 />
                 <View style={{ maxWidth: 110 }}>
                   <Text style={styles.userPillName} numberOfLines={1}>
@@ -254,16 +253,15 @@ export default function App() {
             <View style={styles.inviteBanner}>
               <AvatarView
                 avatar={liveInvite.from.avatar}
-                hue={liveInvite.from.avatar_hue}
+                color={liveInvite.from.color}
                 size={38}
-                online={true}
               />
               <View style={{ flex: 1 }}>
                 <Text style={styles.inviteTitle} numberOfLines={1}>
                   🃏 {liveInvite.from.display_name} convidou-te!
                 </Text>
                 <Text style={styles.inviteSub}>
-                  Sala Online #{liveInvite.roomCode} · {liveInvite.gameTitle || 'Mexicana'}
+                  Sala Online #{liveInvite.room} · {liveInvite.game || 'Mexicana'}
                 </Text>
               </View>
               <TouchableOpacity
@@ -362,14 +360,14 @@ export default function App() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: COLORS.bg0
+    backgroundColor: COLORS.bg
   },
   safeArea: {
     flex: 1
   },
   loadingScreen: {
     flex: 1,
-    backgroundColor: COLORS.bg0,
+    backgroundColor: COLORS.bg,
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24
@@ -395,14 +393,14 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5
   },
   loadingSub: {
-    color: COLORS.textDim,
+    color: COLORS.muted,
     fontSize: 13,
     marginTop: 4
   },
   topbar: {
     backgroundColor: 'rgba(11, 14, 24, 0.92)',
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    borderBottomColor: COLORS.panelBorder,
     paddingHorizontal: 14,
     paddingTop: 8,
     paddingBottom: 10,
@@ -449,7 +447,7 @@ const styles = StyleSheet.create({
     gap: 8,
     backgroundColor: 'rgba(255,255,255,0.04)',
     borderWidth: 1,
-    borderColor: COLORS.borderStrong,
+    borderColor: COLORS.panelBorder,
     borderRadius: 99,
     paddingVertical: 4,
     paddingHorizontal: 10
@@ -472,7 +470,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 3,
     borderWidth: 1,
-    borderColor: COLORS.border
+    borderColor: COLORS.panelBorder
   },
   navLink: {
     flex: 1,
@@ -487,7 +485,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(56, 224, 255, 0.35)'
   },
   navLinkTxt: {
-    color: COLORS.textDim,
+    color: COLORS.muted,
     fontSize: 11,
     fontWeight: '700'
   },
@@ -566,4 +564,3 @@ const styles = StyleSheet.create({
     textAlign: 'center'
   }
 });
-
